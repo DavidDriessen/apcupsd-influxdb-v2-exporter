@@ -4,12 +4,13 @@ import requests.exceptions
 import time
 
 from apcaccess import status as apc
-from influxdb import InfluxDBClient
-from influxdb.exceptions import InfluxDBClientError
+from influxdb_client import InfluxDBClient
+
 
 def remove_irrelevant_data(status, remove_these_keys):
     for key in remove_these_keys:
         status.pop(key, None)
+
 
 def move_tag_values_to_tag_dictionary(status, tags, tag_keys):
     for key in tag_keys:
@@ -17,17 +18,18 @@ def move_tag_values_to_tag_dictionary(status, tags, tag_keys):
             tags[key] = status[key]
             status.pop(key, None)
 
+
 def convert_numerical_values_to_floats(ups):
     for key in ups:
         if ups[key].replace('.', '', 1).isdigit():
             ups[key] = float(ups[key])
 
-dbname = os.getenv('INFLUXDB_DATABASE', 'apcupsd')
-user = os.getenv('INFLUXDB_USER')
-password = os.getenv('INFLUXDB_PASSWORD')
-port = os.getenv('INFLUXDB_PORT', 8086)
-host = os.getenv('INFLUXDB_HOST')
-apcupsd_host = os.getenv('APCUPSD_HOST', host)
+
+org = os.getenv('INFLUXDB_ORG')
+token = os.getenv('INFLUXDB_TOKEN')
+url = os.getenv('INFLUXDB_URL')  # "http://localhost:9999"
+bucket = os.getenv('INFLUXDB_BUCKET', 'apcupsd')
+apcupsd_host = os.getenv('APCUPSD_HOST', 'Host')
 
 min_delay = int(os.getenv('INTERVAL', 10))
 max_delay = int(os.getenv('MAX_INTERVAL', min_delay * 8))
@@ -35,29 +37,28 @@ delay = min_delay
 
 print_to_console = os.getenv('VERBOSE', 'false').lower() == 'true'
 
-remove_these_keys = ['DATE', 'STARTTIME', 'END APC','ALARMDEL']
+remove_these_keys = ['DATE', 'STARTTIME', 'END APC', 'ALARMDEL']
 tag_keys = ['APC', 'HOSTNAME', 'UPSNAME', 'VERSION', 'CABLE', 'MODEL', 'UPSMODE', 'DRIVER', 'APCMODEL']
 
 watts_key = 'WATTS'
 nominal_power_key = 'NOMPOWER'
 
 client = None
+write_api = None
 
 while True:
     if not client:
         try:
-            client = InfluxDBClient(host, port, user, password, dbname)
+            client = InfluxDBClient(url=url, token=token, org=org)
             client.ping()
             print('Connectivity to InfluxDB present')
-            dblist = client.get_list_database()
-            if dbname not in [ x['name'] for x in dblist]:
-                print("Database doesn't exist, creating")
-                client.create_database(dbname)
+            write_api = client.write_api()
+
             if delay != min_delay:
                 delay = min_delay
                 print('Connection successful, changing delay to %d' % delay)
         except Exception as e:
-            if isinstance(e, InfluxDBClientError) and e.code == 401:
+            if e.code == 401:
                 print('Credentials provided are not authorized, error is: {}'.format(e.content))
             client = None
             new_delay = min(delay * 2, max_delay)
@@ -90,9 +91,9 @@ while True:
 
         if print_to_console:
             print(json_body)
-            print(client.write_points(json_body))
+            print(write_api.write(bucket, org, json_body))
         else:
-            client.write_points(json_body)
+            write_api.write(bucket, org, json_body)
 
     except ValueError as valueError:
         raise valueError
